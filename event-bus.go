@@ -5,56 +5,68 @@ import (
 	"sync"
 )
 
+type subscription[T any] struct {
+	serializer *Serializer
+	channel    chan T
+	once       bool
+}
+
+// Bus can be used to implement event-driven architectures in Golang.
 type Bus[T any] struct {
-	mu                     sync.RWMutex
-	subscribedChannels     map[string][]chan T
-	onceSubscribedChannels map[string][]chan T
-	chanBufferSize         int
+	mu               sync.Mutex
+	subscriptions    map[string][]subscription[T]
+	publishSequences map[string]uint64
+	chanBufferSize   int
 }
 
-func (b *Bus[T]) unsubscribe(channelsMap map[string][]chan T, topic string, channel chan T) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	if _, ok := channelsMap[topic]; !ok {
+func (b *Bus[T]) unsubscribe(topic string, sub subscription[T]) {
+	if _, ok := b.subscriptions[topic]; !ok {
 		return
 	}
 
-	chanIndex := FindSliceIndex(channelsMap[topic], channel)
-	if chanIndex <= -1 {
+	subIndex := FindSliceIndex(b.subscriptions[topic], sub)
+	if subIndex <= -1 {
 		return
 	}
 
-	close(channel)
+	close(sub.channel)
 
-	channelsMap[topic] = RemoveFromSlice(channelsMap[topic], chanIndex)
-	if len(channelsMap[topic]) == 0 {
-		delete(channelsMap, topic)
+	b.subscriptions[topic] = RemoveFromSlice(b.subscriptions[topic], subIndex)
+	if len(b.subscriptions[topic]) == 0 {
+		delete(b.subscriptions, topic)
+		delete(b.publishSequences, topic)
 	}
 }
 
-func (b *Bus[T]) subscribe(topic string, once bool) (chan T, func()) {
+func (b *Bus[T]) subscribe(topic string, once bool) (<-chan T, func()) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	channelsMap := b.subscribedChannels
-	if once {
-		channelsMap = b.onceSubscribedChannels
+	if _, ok := b.subscriptions[topic]; !ok {
+		b.subscriptions[topic] = make([]subscription[T], 0)
 	}
 
-	if _, ok := channelsMap[topic]; !ok {
-		channelsMap[topic] = make([]chan T, 0)
+	sub := subscription[T]{
+		serializer: nil,
+		channel:    make(chan T, b.chanBufferSize),
+		once:       once,
+	}
+	// once subscriptions doesn't need serializer
+	if !once {
+		sub.serializer = NewSerializer()
 	}
 
-	channel := make(chan T, b.chanBufferSize)
-	channelsMap[topic] = append(channelsMap[topic], channel)
+	b.subscriptions[topic] = append(b.subscriptions[topic], sub)
 
-	return channel, func() {
-		b.unsubscribe(channelsMap, topic, channel)
+	return sub.channel, func() {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+
+		b.unsubscribe(topic, sub)
 	}
 }
 
-func (b *Bus[T]) Subscribe(topic string) (chan T, func()) {
+func (b *Bus[T]) Subscribe(topic string) (<-chan T, func()) {
 	return b.subscribe(topic, false)
 }
 
@@ -89,37 +101,44 @@ func (b *Bus[T]) Once(ctx context.Context, topic string, callback func(event T))
 	return b.on(ctx, topic, callback, true)
 }
 
-func (b *Bus[T]) SubscribeOnce(topic string) (chan T, func()) {
+func (b *Bus[T]) SubscribeOnce(topic string) (<-chan T, func()) {
 	return b.subscribe(topic, true)
 }
 
 func (b *Bus[T]) Publish(topic string, event T) {
-	b.mu.RLock()
-	channels := b.subscribedChannels[topic]
-	onceChannels := b.subscribedChannels[topic]
-	b.mu.RUnlock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
 
-	if len(channels) == 0 && len(onceChannels) == 0 {
+	if _, ok := b.subscriptions[topic]; !ok || len(b.subscriptions[topic]) == 0 {
 		return
 	}
 
-	for _, channel := range channels {
-		go func(channel chan T) {
-			channel <- event
-		}(channel)
-	}
+	sequence := b.publishSequences[topic]
+	b.publishSequences[topic]++
 
-	for _, channel := range onceChannels {
-		b.unsubscribe(b.onceSubscribedChannels, topic, channel)
-		go func(channel chan T) {
-			channel <- event
-		}(channel)
+	for _, sub := range b.subscriptions[topic] {
+		if sub.once {
+			b.unsubscribe(topic, sub)
+		}
+
+		go func(sub subscription[T]) {
+			if sub.serializer == nil {
+				sub.channel <- event
+
+				return
+			}
+
+			sub.serializer.Enqueue(func() {
+				sub.channel <- event
+			}, sequence)
+		}(sub)
 	}
 }
 
 func NewBus[T any](chanBufferSize int) *Bus[T] {
 	return &Bus[T]{
-		subscribedChannels: make(map[string][]chan T),
-		chanBufferSize:     chanBufferSize,
+		subscriptions:    make(map[string][]subscription[T]),
+		publishSequences: make(map[string]uint64),
+		chanBufferSize:   chanBufferSize,
 	}
 }
