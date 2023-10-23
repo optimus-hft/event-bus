@@ -1,7 +1,8 @@
-package event_bus
+package eventbus
 
 import (
 	"context"
+	"slices"
 	"sync"
 )
 
@@ -11,12 +12,11 @@ type subscription[T any] struct {
 	once       bool
 }
 
-// Bus can be used to implement event-driven architectures in Golang.
+// Bus can be used to implement event-driven architectures in Golang. Each bus can have multiple subscribers to different topics.
 type Bus[T any] struct {
 	mu               sync.Mutex
 	subscriptions    map[string][]subscription[T]
 	publishSequences map[string]uint64
-	chanBufferSize   int
 }
 
 func (b *Bus[T]) unsubscribe(topic string, sub subscription[T]) {
@@ -24,14 +24,12 @@ func (b *Bus[T]) unsubscribe(topic string, sub subscription[T]) {
 		return
 	}
 
-	subIndex := FindSliceIndex(b.subscriptions[topic], sub)
+	subIndex := slices.Index(b.subscriptions[topic], sub)
 	if subIndex <= -1 {
 		return
 	}
 
-	close(sub.channel)
-
-	b.subscriptions[topic] = RemoveFromSlice(b.subscriptions[topic], subIndex)
+	b.subscriptions[topic] = slices.Delete(b.subscriptions[topic], subIndex, subIndex+1)
 	if len(b.subscriptions[topic]) == 0 {
 		delete(b.subscriptions, topic)
 		delete(b.publishSequences, topic)
@@ -48,10 +46,10 @@ func (b *Bus[T]) subscribe(topic string, once bool) (<-chan T, func()) {
 
 	sub := subscription[T]{
 		serializer: nil,
-		channel:    make(chan T, b.chanBufferSize),
+		channel:    make(chan T),
 		once:       once,
 	}
-	// once subscriptions doesn't need serializer
+	// once subscriptions don't need serializer
 	if !once {
 		sub.serializer = NewSerializer()
 	}
@@ -66,8 +64,15 @@ func (b *Bus[T]) subscribe(topic string, once bool) (<-chan T, func()) {
 	}
 }
 
+// Subscribe returns a channel for listening on a given topic events, Also an unsubscribe functions is returned that can be used to cancel the subscription.
 func (b *Bus[T]) Subscribe(topic string) (<-chan T, func()) {
 	return b.subscribe(topic, false)
+}
+
+// SubscribeOnce returns a channel for listening on a given topic events, After the first event, subscription is automatically cancelled.
+// Also, an unsubscribe functions is returned that can be used to cancel the subscription before receiving any events.
+func (b *Bus[T]) SubscribeOnce(topic string) (<-chan T, func()) {
+	return b.subscribe(topic, true)
 }
 
 func (b *Bus[T]) on(ctx context.Context, topic string, callback func(event T), once bool) func() {
@@ -93,18 +98,20 @@ func (b *Bus[T]) on(ctx context.Context, topic string, callback func(event T), o
 	return unsubscribe
 }
 
+// On executes the given callback whenever an event is sent to the given topic. In order to stop it, Cancel the context.
 func (b *Bus[T]) On(ctx context.Context, topic string, callback func(event T)) func() {
 	return b.on(ctx, topic, callback, false)
 }
 
+// Once executes the given callback as soon as receiving the first event on the given topic. After one callback execution, Callback will not be called again.
+// If you want to stop early, cancel the context.
 func (b *Bus[T]) Once(ctx context.Context, topic string, callback func(event T)) func() {
 	return b.on(ctx, topic, callback, true)
 }
 
-func (b *Bus[T]) SubscribeOnce(topic string) (<-chan T, func()) {
-	return b.subscribe(topic, true)
-}
-
+// Publish sends the given event to all the subscribers of the given topic. Publish is non-blocking and doesn't wait for subscribers.
+// Although this is non-blocking, event ordering is guaranteed in a FIFO manner. Each subscriber gets events in the same order they were published.
+// A slow subscriber doesn't block other subscribers, Ordering is handled for each subscriber separately and different subscribers on the same topic can be reading different events at a given time.
 func (b *Bus[T]) Publish(topic string, event T) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -128,17 +135,17 @@ func (b *Bus[T]) Publish(topic string, event T) {
 				return
 			}
 
-			sub.serializer.Enqueue(func() {
+			sub.serializer.Execute(func() {
 				sub.channel <- event
 			}, sequence)
 		}(sub)
 	}
 }
 
-func NewBus[T any](chanBufferSize int) *Bus[T] {
+// New creates a new event bus.
+func New[T any]() *Bus[T] {
 	return &Bus[T]{
 		subscriptions:    make(map[string][]subscription[T]),
 		publishSequences: make(map[string]uint64),
-		chanBufferSize:   chanBufferSize,
 	}
 }

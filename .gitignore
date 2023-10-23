@@ -176,11 +176,3 @@ Temporary Items
 
 # Linter
 gl-code-quality-report.json
-
-# Docker compose volumes
-data
-
-# Config
-config.yml
-
-test.go

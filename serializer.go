@@ -1,4 +1,4 @@
-package event_bus
+package eventbus
 
 import (
 	"slices"
@@ -12,13 +12,16 @@ type queueItem struct {
 	sequence uint64
 }
 
+// Serializer can be used to serialize execution of some goroutines according to their sequence number.
+// If goroutine A with a higher sequence number gets scheduled before goroutine B with a lower sequence number, A will be queued and will be executed after execution of B.
 type Serializer struct {
 	mu                    sync.Mutex
 	queue                 []queueItem
 	sequenceToExecuteNext uint64
 }
 
-func (s *Serializer) Enqueue(cb callback, sequence uint64) {
+// Execute runs the given callbacks serially according to each callback sequence number.
+func (s *Serializer) Execute(cb callback, sequence uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -54,6 +57,7 @@ func (s *Serializer) Enqueue(cb callback, sequence uint64) {
 	}
 }
 
+// NewSerializer creates a new serializer.
 func NewSerializer() *Serializer {
 	return &Serializer{
 		queue: make([]queueItem, 0),
