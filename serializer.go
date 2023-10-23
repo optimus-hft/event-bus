@@ -15,9 +15,9 @@ type queueItem struct {
 // Serializer can be used to serialize execution of some goroutines according to their sequence number.
 // If goroutine A with a higher sequence number gets scheduled before goroutine B with a lower sequence number, A will be queued and will be executed after execution of B.
 type Serializer struct {
-	mu                    sync.Mutex
-	queue                 []queueItem
-	sequenceToExecuteNext uint64
+	mu                   sync.Mutex
+	queue                []queueItem
+	lastExecutedSequence uint64
 }
 
 // Execute runs the given callbacks serially according to each callback sequence number.
@@ -47,13 +47,13 @@ func (s *Serializer) Execute(cb callback, sequence uint64) {
 
 		item := s.queue[0]
 
-		if item.sequence != s.sequenceToExecuteNext {
+		if item.sequence != s.lastExecutedSequence && item.sequence != s.lastExecutedSequence+1 {
 			break
 		}
 
 		s.queue = s.queue[1:]
 		item.callback()
-		s.sequenceToExecuteNext++
+		s.lastExecutedSequence = item.sequence
 	}
 }
 
