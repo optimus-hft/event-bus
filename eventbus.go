@@ -1,7 +1,6 @@
 package eventbus
 
 import (
-	"context"
 	"slices"
 	"sync"
 )
@@ -75,8 +74,9 @@ func (b *Bus[T]) SubscribeOnce(topic string) (<-chan T, func()) {
 	return b.subscribe(topic, true)
 }
 
-func (b *Bus[T]) on(ctx context.Context, topic string, callback func(event T), once bool) func() {
+func (b *Bus[T]) on(topic string, callback func(event T), once bool) func() {
 	channel, unsubscribe := b.subscribe(topic, once)
+	doneChannel := make(chan struct{})
 
 	go func() {
 		for {
@@ -87,26 +87,27 @@ func (b *Bus[T]) on(ctx context.Context, topic string, callback func(event T), o
 				if once {
 					return
 				}
-			case <-ctx.Done():
-				unsubscribe()
-
+			case <-doneChannel:
 				return
 			}
 		}
 	}()
 
-	return unsubscribe
+	return func() {
+		unsubscribe()
+		close(doneChannel)
+	}
 }
 
-// On executes the given callback whenever an event is sent to the given topic. In order to stop it, Cancel the context.
-func (b *Bus[T]) On(ctx context.Context, topic string, callback func(event T)) func() {
-	return b.on(ctx, topic, callback, false)
+// On executes the given callback whenever an event is sent to the given topic, Also an unsubscribe functions is returned that can be used to cancel the subscription.
+func (b *Bus[T]) On(topic string, callback func(event T)) func() {
+	return b.on(topic, callback, false)
 }
 
 // Once executes the given callback as soon as receiving the first event on the given topic. After one callback execution, Callback will not be called again.
-// If you want to stop early, cancel the context.
-func (b *Bus[T]) Once(ctx context.Context, topic string, callback func(event T)) func() {
-	return b.on(ctx, topic, callback, true)
+// Also, an unsubscribe functions is returned that can be used to cancel the subscription before receiving any events.
+func (b *Bus[T]) Once(topic string, callback func(event T)) func() {
+	return b.on(topic, callback, true)
 }
 
 // Publish sends the given event to all the subscribers of the given topic. Publish is non-blocking and doesn't wait for subscribers.
