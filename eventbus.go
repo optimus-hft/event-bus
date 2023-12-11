@@ -41,6 +41,7 @@ func (b *Bus[T]) subscribe(topic string, once bool) (<-chan T, func()) {
 
 	if _, ok := b.subscriptions[topic]; !ok {
 		b.subscriptions[topic] = make([]subscription[T], 0)
+		b.publishSequences[topic] = 1
 	}
 
 	sub := subscription[T]{
@@ -50,7 +51,7 @@ func (b *Bus[T]) subscribe(topic string, once bool) (<-chan T, func()) {
 	}
 	// once subscriptions don't need serializer
 	if !once {
-		sub.serializer = NewSerializer()
+		sub.serializer = NewSerializer(b.publishSequences[topic] - 1)
 	}
 
 	b.subscriptions[topic] = append(b.subscriptions[topic], sub)

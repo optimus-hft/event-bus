@@ -47,7 +47,13 @@ func (s *Serializer) Execute(cb callback, sequence uint64) {
 
 		item := s.queue[0]
 
-		if item.sequence != s.lastExecutedSequence && item.sequence != s.lastExecutedSequence+1 {
+		if item.sequence <= s.lastExecutedSequence {
+			s.queue = s.queue[1:]
+
+			continue
+		}
+
+		if item.sequence != s.lastExecutedSequence+1 {
 			break
 		}
 
@@ -58,8 +64,9 @@ func (s *Serializer) Execute(cb callback, sequence uint64) {
 }
 
 // NewSerializer creates a new serializer.
-func NewSerializer() *Serializer {
+func NewSerializer(lastExecutedSequence uint64) *Serializer {
 	return &Serializer{
-		queue: make([]queueItem, 0),
+		queue:                make([]queueItem, 0),
+		lastExecutedSequence: lastExecutedSequence,
 	}
 }
